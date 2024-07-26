@@ -1,9 +1,14 @@
+Baik, berikut adalah kode lengkap yang sudah diperbaiki:
+
+### File: `boom-click-handler.php`
+
+```php
 <?php
 /*
 Plugin Name: Boom Click Handler
 Description: Mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih.
-Version: 1.4
-Author: @luffynas
+Version: 1.5
+Author: Developer
 */
 
 if (!defined('ABSPATH')) {
@@ -39,6 +44,18 @@ function bch_activate() {
     ) $charset_collate;";
     dbDelta($sql);
 
+    // Create traffic log table
+    $traffic_log_table = $wpdb->prefix . 'bch_traffic_log';
+    $sql = "CREATE TABLE $traffic_log_table (
+        id bigint(20) NOT NULL AUTO_INCREMENT,
+        ip_address varchar(100) NOT NULL,
+        device_id varchar(100) NOT NULL,
+        location varchar(255) NOT NULL,
+        access_time datetime DEFAULT '0000-00-00 00:00:00' NOT NULL,
+        PRIMARY KEY (id)
+    ) $charset_collate;";
+    dbDelta($sql);
+
     // Create blacklist table
     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
     $sql = "CREATE TABLE $blacklist_table (
@@ -62,6 +79,10 @@ function bch_deactivate() {
     $click_log_table = $wpdb->prefix . 'bch_click_log';
     $wpdb->query("DROP TABLE IF EXISTS $click_log_table;");
 
+    // Drop traffic log table
+    $traffic_log_table = $wpdb->prefix . 'bch_traffic_log';
+    $wpdb->query("DROP TABLE IF EXISTS $traffic_log_table;");
+
     // Drop blacklist table
     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
     $wpdb->query("DROP TABLE IF EXISTS $blacklist_table;");
@@ -70,7 +91,7 @@ function bch_deactivate() {
 // Enqueue Script
 add_action('wp_enqueue_scripts', 'bch_enqueue_scripts');
 function bch_enqueue_scripts() {
-    wp_enqueue_script('bch-script', plugin_dir_url(__FILE__) . 'js/bch-script.js', array('jquery'), '1.4', true);
+    wp_enqueue_script('bch-script', plugin_dir_url(__FILE__) . 'js/bch-script.js', array('jquery'), '1.5', true);
     wp_localize_script('bch-script', 'bch_ajax', array('ajax_url' => admin_url('admin-ajax.php')));
 }
 
@@ -92,6 +113,11 @@ function bch_handle_click() {
         wp_send_json_error('You are blacklisted.');
     }
 
+    // Detect VPN usage
+    if (detect_vpn($ip_address, $device_id)) {
+        wp_send_json_error('You are using a VPN.');
+    }
+
     // Check quarantine
     $quarantine = $wpdb->get_row($wpdb->prepare("SELECT * FROM $quarantine_table WHERE ip_address = %s AND device_id = %s AND quarantine_until > %s", $ip_address, $device_id, $current_time));
     if ($quarantine) {
@@ -104,19 +130,6 @@ function bch_handle_click() {
         'device_id' => $device_id,
         'click_time' => $current_time
     ));
-
-    // Check click limit for rapid clicks (5 clicks in 10 seconds)
-    $rapid_click_limit = 5;
-    $rapid_time_limit = '10 seconds';
-    $rapid_click_count = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $click_log_table WHERE ip_address = %s AND device_id = %s AND click_time > DATE_SUB(%s, INTERVAL $rapid_time_limit)", $ip_address, $device_id, $current_time));
-
-    if ($rapid_click_count > $rapid_click_limit) {
-        $wpdb->insert($blacklist_table, array(
-            'ip_address' => $ip_address,
-            'device_id' => $device_id
-        ));
-        wp_send_json_error('You have been blacklisted.');
-    }
 
     // Check click limit for 1 minute
     $click_limit_1_minute = 2; // Maximum allowed clicks in 1 minute
@@ -156,9 +169,16 @@ add_action('wp_ajax_bch_check_quarantine', 'bch_check_quarantine');
 function bch_check_quarantine() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'bch_quarantine';
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
     $ip_address = $_SERVER['REMOTE_ADDR'];
     $device_id = sanitize_text_field($_POST['device_id']);
     $current_time = current_time('mysql');
+
+    // Check blacklist
+    $blacklist = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND device_id = %s", $ip_address, $device_id));
+    if ($blacklist) {
+        wp_send_json_error('You are blacklisted.');
+    }
 
     // Check quarantine
     $quarantine = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table_name WHERE ip_address = %s AND device_id = %s AND quarantine_until > %s", $ip_address, $device_id, $current_time));
@@ -169,5 +189,61 @@ function bch_check_quarantine() {
     }
 
     wp_die();
+}
+
+// Detect VPN based on traffic pattern
+function detect_vpn($ip_address, $device_id) {
+    global $wpdb;
+    $traffic_log_table = $wpdb->prefix . 'bch_traffic_log';
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $current_time = current_time('mysql');
+    $location = get_user_location($ip_address);
+
+    // Insert current access log
+    $wpdb->insert($traffic_log_table, array(
+        'ip_address' => $ip_address,
+        'device_id' => $device_id,
+        'location' => $location,
+        'access_time' => $current_time
+    ));
+
+    // Check for rapid IP changes
+    $time_limit = '10 minutes';
+    $recent_logs = $wpdb->get_results($wpdb->prepare("SELECT * FROM $traffic_log_table WHERE device_id = %s AND access_time > DATE_SUB(%s, INTERVAL $time_limit)", $device_id, $current_time));
+
+    $ip_changes = 0;
+    $locations = [];
+    foreach ($recent_logs as $log) {
+        if ($log->ip_address !== $ip_address) {
+            $ip_changes++;
+        }
+        if (!in_array($log->location, $locations)) {
+            $locations[] = $log->location;
+        }
+    }
+
+    // Detect rapid IP changes or multiple locations
+    if ($ip_changes > 3 || count($locations) > 2) {
+        $wpdb->insert($blacklist_table, array(
+            'ip_address' => $ip_address,
+            'device_id' => $device_id
+        ));
+        return true;
+    }
+    return false;
+}
+
+// Get User Location
+function get_user_location($ip_address) {
+    $response = wp_remote_get("http://ip-api.com/json/$ip_address");
+    if (is_wp_error($response)) {
+        return 'Unknown';
+    }
+    $body = wp_remote_retrieve_body($response);
+    $data = json_decode($body, true);
+    if ($data['status'] === 'success') {
+        return $data['country'] . ', ' . $data['city'];
+    }
+    return 'Unknown';
 }
 ?>
