@@ -1,9 +1,9 @@
 <?php
 /*
 Plugin Name: Boom Click Handler
-Description: Mendeteksi double click iklan adsense dari pengguna dengan device dan IP yang sama, dan memasukkan mereka ke dalam karantina jika mereka mengklik lebih dari 2 kali dalam waktu kurang dari 1 menit atau lebih dari 5 kali dalam waktu 30 menit.
-Version: 1.3
-Author: Developer
+Description: Mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih.
+Version: 1.4
+Author: @luffynas
 */
 
 if (!defined('ABSPATH')) {
@@ -38,6 +38,16 @@ function bch_activate() {
         PRIMARY KEY (id)
     ) $charset_collate;";
     dbDelta($sql);
+
+    // Create blacklist table
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $sql = "CREATE TABLE $blacklist_table (
+        id bigint(20) NOT NULL AUTO_INCREMENT,
+        ip_address varchar(100) NOT NULL,
+        device_id varchar(100) NOT NULL,
+        PRIMARY KEY (id)
+    ) $charset_collate;";
+    dbDelta($sql);
 }
 
 // Deactivation Hook
@@ -51,12 +61,16 @@ function bch_deactivate() {
     // Drop click log table
     $click_log_table = $wpdb->prefix . 'bch_click_log';
     $wpdb->query("DROP TABLE IF EXISTS $click_log_table;");
+
+    // Drop blacklist table
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $wpdb->query("DROP TABLE IF EXISTS $blacklist_table;");
 }
 
 // Enqueue Script
 add_action('wp_enqueue_scripts', 'bch_enqueue_scripts');
 function bch_enqueue_scripts() {
-    wp_enqueue_script('bch-script', plugin_dir_url(__FILE__) . 'js/bch-script.js', array('jquery'), '1.3', true);
+    wp_enqueue_script('bch-script', plugin_dir_url(__FILE__) . 'js/bch-script.js', array('jquery'), '1.4', true);
     wp_localize_script('bch-script', 'bch_ajax', array('ajax_url' => admin_url('admin-ajax.php')));
 }
 
@@ -67,9 +81,16 @@ function bch_handle_click() {
     global $wpdb;
     $quarantine_table = $wpdb->prefix . 'bch_quarantine';
     $click_log_table = $wpdb->prefix . 'bch_click_log';
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
     $ip_address = $_SERVER['REMOTE_ADDR'];
     $device_id = sanitize_text_field($_POST['device_id']);
     $current_time = current_time('mysql');
+
+    // Check blacklist
+    $blacklist = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND device_id = %s", $ip_address, $device_id));
+    if ($blacklist) {
+        wp_send_json_error('You are blacklisted.');
+    }
 
     // Check quarantine
     $quarantine = $wpdb->get_row($wpdb->prepare("SELECT * FROM $quarantine_table WHERE ip_address = %s AND device_id = %s AND quarantine_until > %s", $ip_address, $device_id, $current_time));
@@ -83,6 +104,19 @@ function bch_handle_click() {
         'device_id' => $device_id,
         'click_time' => $current_time
     ));
+
+    // Check click limit for rapid clicks (5 clicks in 10 seconds)
+    $rapid_click_limit = 5;
+    $rapid_time_limit = '10 seconds';
+    $rapid_click_count = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $click_log_table WHERE ip_address = %s AND device_id = %s AND click_time > DATE_SUB(%s, INTERVAL $rapid_time_limit)", $ip_address, $device_id, $current_time));
+
+    if ($rapid_click_count > $rapid_click_limit) {
+        $wpdb->insert($blacklist_table, array(
+            'ip_address' => $ip_address,
+            'device_id' => $device_id
+        ));
+        wp_send_json_error('You have been blacklisted.');
+    }
 
     // Check click limit for 1 minute
     $click_limit_1_minute = 2; // Maximum allowed clicks in 1 minute

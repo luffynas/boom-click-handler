@@ -1,13 +1,15 @@
 # Boom Click Handler
 
-Boom Click Handler adalah plugin WordPress yang mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama. Plugin ini membantu melindungi akun Google AdSense Anda dari aktivitas klik yang mencurigakan.
+Boom Click Handler adalah plugin WordPress yang mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih.
 
 ## Fitur
 
 - Mendeteksi klik iklan lebih dari 2 kali dalam waktu kurang dari 1 menit.
 - Mendeteksi klik iklan lebih dari 5 kali dalam waktu 30 menit.
+- Mendeteksi klik cepat berulang (5 klik dalam 10 detik).
 - Mengkarantina pengguna yang melanggar batas klik selama 1 jam.
-- Mencegah pengguna yang dikarantina untuk mengklik iklan.
+- Menambahkan pengguna yang mencurigakan ke daftar hitam.
+- Mencegah pengguna yang dikarantina atau daftar hitam untuk mengklik iklan.
 
 ## Instalasi
 
@@ -32,20 +34,6 @@ Boom Click Handler adalah plugin WordPress yang mendeteksi dan mencegah klik ikl
     ```
 
 2. Plugin akan secara otomatis mendeteksi klik dan menerapkan logika karantina jika pengguna melanggar batas klik.
-
-## Kode
-
-### File: `boom-click-handler.php`
-
-```php
-<?php
-/*
-Plugin Name: Boom Click Handler
-Description: Mendeteksi double click iklan adsense dari pengguna dengan device dan IP yang sama, dan memasukkan mereka ke dalam karantina jika mereka mengklik lebih dari 2 kali dalam waktu kurang dari 1 menit atau lebih dari 5 kali dalam waktu 30 menit.
-Version: 1.3
-Author: @luffynas
-*/
-```
 
 ## Lisensi
 
