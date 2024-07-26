@@ -1,14 +1,9 @@
-Baik, berikut adalah kode lengkap yang sudah diperbaiki:
-
-### File: `boom-click-handler.php`
-
-```php
 <?php
 /*
 Plugin Name: Boom Click Handler
 Description: Mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih.
 Version: 1.5
-Author: Developer
+Author: @luffynas
 */
 
 if (!defined('ABSPATH')) {
