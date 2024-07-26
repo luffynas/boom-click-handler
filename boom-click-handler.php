@@ -228,17 +228,29 @@ function detect_vpn($ip_address, $device_id) {
     return false;
 }
 
-// Get User Location
+// Get User Location using multiple providers
 function get_user_location($ip_address) {
+    // Try ipinfo.io
+    $api_token_ipinfo = 'bd550fe55da285';
+    $response = wp_remote_get("https://ipinfo.io/$ip_address/json?token=$api_token_ipinfo");
+    if (!is_wp_error($response)) {
+        $body = wp_remote_retrieve_body($response);
+        $data = json_decode($body, true);
+        if (isset($data['country']) && isset($data['city'])) {
+            return $data['country'] . ', ' . $data['city'];
+        }
+    }
+
+    // Fallback to ip-api.com
     $response = wp_remote_get("http://ip-api.com/json/$ip_address");
-    if (is_wp_error($response)) {
-        return 'Unknown';
+    if (!is_wp_error($response)) {
+        $body = wp_remote_retrieve_body($response);
+        $data = json_decode($body, true);
+        if ($data['status'] === 'success') {
+            return $data['country'] . ', ' . $data['city'];
+        }
     }
-    $body = wp_remote_retrieve_body($response);
-    $data = json_decode($body, true);
-    if ($data['status'] === 'success') {
-        return $data['country'] . ', ' . $data['city'];
-    }
+
     return 'Unknown';
 }
 ?>
