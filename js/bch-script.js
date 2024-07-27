@@ -11,6 +11,11 @@ jQuery(document).ready(function($) {
                 $(this).wrap('<div class="adsense-wrapper"></div>');
             }
         });
+        $('.mys-wrapper').each(function() {
+            if (!$(this).hasClass('adsense-wrapper')) {
+                $(this).addClass('adsense-wrapper');
+            }
+        });
     }
 
     // Initial wrapping
@@ -48,7 +53,7 @@ jQuery(document).ready(function($) {
         checkQuarantine(function(isQuarantined) {
             if (isQuarantined) {
                 e.preventDefault();
-                alert('You are in quarantine and cannot click ads.');
+                // alert('You are in quarantine and cannot click ads.');
             } else {
                 $.ajax({
                     type: 'POST',
