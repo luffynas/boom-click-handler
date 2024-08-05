@@ -75,6 +75,15 @@ function bch_activate() {
         PRIMARY KEY (id)
     ) $charset_collate;";
     dbDelta($sql);
+
+    // Create whitelist table
+    $whitelist_table = $wpdb->prefix . 'bch_whitelist';
+    $sql = "CREATE TABLE $whitelist_table (
+        id bigint(20) NOT NULL AUTO_INCREMENT,
+        user_login varchar(60) NOT NULL,
+        PRIMARY KEY (id)
+    ) $charset_collate;";
+    dbDelta($sql);
 }
 
 // Get IP Address
@@ -128,17 +137,21 @@ include plugin_dir_path(__FILE__) . 'bch_admin_view.php';
 // Include admin view
 include plugin_dir_path(__FILE__) . 'bch_admin_access_log_view.php';
 
+// Include admin view whitelist account
+include plugin_dir_path(__FILE__) . 'bch_admin_whitelist_account_view.php';
+
 // Admin Menu for Blocking IPs
 add_action('admin_menu', 'bch_admin_menu');
 function bch_admin_menu() {
     add_menu_page('Boom Click Handler', 'Boom Click Handler', 'manage_options', 'boom-click-handler', 'bch_admin_page');
     add_submenu_page('boom-click-handler', 'Access Log', 'Access Log', 'manage_options', 'bch-access-log', 'bch_access_log_page');
+    add_submenu_page('boom-click-handler', 'Whitelist', 'Whitelist', 'manage_options', 'bch-whitelist', 'bch_whitelist_page');
 }
 
 // Enqueue scripts
 add_action('admin_enqueue_scripts', 'bch_enqueue_admin_scripts');
 function bch_enqueue_admin_scripts($hook) {
-    if ($hook != 'toplevel_page_boom-click-handler' && $hook != 'boom-click-handler_page_bch-access-log') {
+    if ($hook != 'toplevel_page_boom-click-handler' && $hook != 'boom-click-handler_page_bch-access-log' && $hook != 'boom-click-handler_page_bch-whitelist') {
         return;
     }
     wp_enqueue_script('bch-admin-script', plugin_dir_url(__FILE__) . 'js/bch-admin.js', array('jquery'), '1.0', true);
@@ -201,6 +214,86 @@ function bch_clear_access_log() {
         wp_send_json_success('Access log cleared.');
     } else {
         wp_send_json_error('Failed to clear access log.');
+    }
+}
+
+// Handle Add Whitelist via AJAX
+add_action('wp_ajax_bch_add_whitelist', 'bch_ajax_add_whitelist');
+function bch_ajax_add_whitelist() {
+    global $wpdb;
+    $whitelist_table = $wpdb->prefix . 'bch_whitelist';
+    $user_login = sanitize_text_field($_POST['bch_user_login']);
+    $user = get_user_by('login', $user_login);
+    if ($user) {
+        $result = $wpdb->insert($whitelist_table, array(
+            'user_login' => $user_login
+        ));
+        if ($result !== false) {
+            wp_send_json_success('User ' . esc_html($user_login) . ' has been added to whitelist.');
+        } else {
+            wp_send_json_error('Failed to add user ' . esc_html($user_login) . ' to whitelist.');
+        }
+    } else {
+        wp_send_json_error('Invalid user login');
+    }
+}
+
+// Handle Remove Whitelist via AJAX
+add_action('wp_ajax_bch_remove_whitelist', 'bch_ajax_remove_whitelist');
+function bch_ajax_remove_whitelist() {
+    global $wpdb;
+    $whitelist_table = $wpdb->prefix . 'bch_whitelist';
+    $user_id = intval($_POST['user_id']);
+    $result = $wpdb->delete($whitelist_table, array('id' => $user_id));
+    if ($result !== false) {
+        wp_send_json_success('User has been removed from whitelist.');
+    } else {
+        wp_send_json_error('Failed to remove user from whitelist.');
+    }
+}
+
+// Check Whitelist during login
+add_action('wp_login', 'bch_check_whitelist', 5, 2);
+function bch_check_whitelist($user_login, $user) {
+    global $wpdb;
+    $whitelist_table = $wpdb->prefix . 'bch_whitelist';
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $login_log_table = $wpdb->prefix . 'bch_login_log';
+    $ip_address = bch_get_ip_address();
+
+    // Log the login attempt
+    $wpdb->insert($login_log_table, array(
+        'ip_address' => $ip_address,
+        'user_login' => $user_login,
+        'login_time' => current_time('mysql')
+    ));
+
+    // Check if the user is whitelisted
+    $is_whitelisted = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $whitelist_table WHERE user_login = %s", $user_login));
+    
+    // If the user is not whitelisted, check login attempts
+    if (!$is_whitelisted) {
+        // Check if the IP is already blocked
+        $is_blocked = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $blacklist_table WHERE ip_address = %s AND kind = 'login'", $ip_address));
+        
+        if (!$is_blocked) {
+            // Count login attempts from this IP in the last minute
+            $login_attempts = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM $login_log_table WHERE ip_address = %s AND login_time > DATE_SUB(NOW(), INTERVAL 1 MINUTE)",
+                $ip_address
+            ));
+            
+            if ($login_attempts > 2) {
+                // Block the IP if there are more than 2 login attempts in the last minute
+                $wpdb->insert($blacklist_table, array(
+                    'ip_address' => $ip_address,
+                    'device_id' => null,
+                    'kind' => 'login',
+                    'reason' => 'Too many login attempts'
+                ));
+                wp_die('Your IP has been blocked due to too many login attempts.');
+            }
+        }
     }
 }
 

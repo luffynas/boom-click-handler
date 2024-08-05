@@ -71,5 +71,43 @@ jQuery(document).ready(function($) {
             });
         }
     });
+
+    $('#bch-add-whitelist-form').on('submit', function(e) {
+        e.preventDefault();
+        var userLogin = $('input[name="bch_user_login"]').val();
+
+        $.post(bch_ajax.ajax_url, {
+            action: 'bch_add_whitelist',
+            bch_user_login: userLogin
+        }, function(response) {
+            if (response.success) {
+                alert(response.data);
+                location.reload();
+            } else {
+                alert(response.data);
+            }
+        }).fail(function(jqXHR, textStatus, errorThrown) {
+            console.log('AJAX error:', textStatus, errorThrown);
+        });
+    });
+
+    $('body').on('click', '.bch-remove-whitelist', function(e) {
+        e.preventDefault();
+        var userId = $(this).data('user-id');
+
+        $.post(bch_ajax.ajax_url, {
+            action: 'bch_remove_whitelist',
+            user_id: userId
+        }, function(response) {
+            if (response.success) {
+                alert(response.data);
+                location.reload();
+            } else {
+                alert(response.data);
+            }
+        }).fail(function(jqXHR, textStatus, errorThrown) {
+            console.log('AJAX error:', textStatus, errorThrown);
+        });
+    });
 });
 
