@@ -1,9 +1,9 @@
 <?php
 /*
 Plugin Name: Boom Click Handler
-Description: Mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih.
-Version: 1.0
-Author: @luffynas
+Description: Mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih. Termasuk memblokir IP yang dicurigai sebagai bot.
+Version: 1.6
+Author: Developer
 */
 
 if (!defined('ABSPATH')) {
@@ -51,43 +51,231 @@ function bch_activate() {
     ) $charset_collate;";
     dbDelta($sql);
 
-    // Create blacklist table
+    // Create or update blacklist table
     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
     $sql = "CREATE TABLE $blacklist_table (
         id bigint(20) NOT NULL AUTO_INCREMENT,
         ip_address varchar(100) NOT NULL,
-        device_id varchar(100) NOT NULL,
+        device_id varchar(100) DEFAULT NULL,
+        kind varchar(50) NOT NULL,
+        reason varchar(255) DEFAULT NULL,
+        PRIMARY KEY (id)
+    ) $charset_collate;";
+    dbDelta($sql);
+
+    // Create access log table
+    $access_log_table = $wpdb->prefix . 'bch_access_log';
+    $sql = "CREATE TABLE $access_log_table (
+        id bigint(20) NOT NULL AUTO_INCREMENT,
+        ip_address varchar(100) NOT NULL,
+        user_agent text NOT NULL,
+        url text NOT NULL,
+        access_time datetime DEFAULT '0000-00-00 00:00:00' NOT NULL,
+        status varchar(10) NOT NULL,
         PRIMARY KEY (id)
     ) $charset_collate;";
     dbDelta($sql);
 }
 
-// Deactivation Hook
-register_deactivation_hook(__FILE__, 'bch_deactivate');
-function bch_deactivate() {
-    global $wpdb;
-    // Drop quarantine table
-    $quarantine_table = $wpdb->prefix . 'bch_quarantine';
-    $wpdb->query("DROP TABLE IF EXISTS $quarantine_table;");
-
-    // Drop click log table
-    $click_log_table = $wpdb->prefix . 'bch_click_log';
-    $wpdb->query("DROP TABLE IF EXISTS $click_log_table;");
-
-    // Drop traffic log table
-    $traffic_log_table = $wpdb->prefix . 'bch_traffic_log';
-    $wpdb->query("DROP TABLE IF EXISTS $traffic_log_table;");
-
-    // Drop blacklist table
-    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
-    $wpdb->query("DROP TABLE IF EXISTS $blacklist_table;");
+// Get IP Address
+function bch_get_ip_address() {
+    if (!empty($_SERVER['HTTP_CLIENT_IP'])) {
+        return $_SERVER['HTTP_CLIENT_IP'];
+    } elseif (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        return $_SERVER['HTTP_X_FORWARDED_FOR'];
+    } else {
+        return $_SERVER['REMOTE_ADDR'];
+    }
 }
 
-// Enqueue Script
-add_action('wp_enqueue_scripts', 'bch_enqueue_scripts');
-function bch_enqueue_scripts() {
-    wp_enqueue_script('bch-script', plugin_dir_url(__FILE__) . 'js/bch-script.js', array('jquery'), '1.5', true);
-    wp_localize_script('bch-script', 'bch_ajax', array('ajax_url' => admin_url('admin-ajax.php')));
+// Log setiap akses ke situs
+function bch_log_access() {
+    global $wpdb;
+    $access_log_table = $wpdb->prefix . 'bch_access_log';
+    $ip_address = bch_get_ip_address();
+    $user_agent = sanitize_text_field($_SERVER['HTTP_USER_AGENT']);
+    $url = sanitize_text_field($_SERVER['REQUEST_URI']);
+    $access_time = current_time('mysql');
+    $status = http_response_code();
+
+    $wpdb->insert($access_log_table, array(
+        'ip_address' => $ip_address,
+        'user_agent' => $user_agent,
+        'url' => $url,
+        'access_time' => $access_time,
+        'status' => $status
+    ));
+}
+add_action('wp', 'bch_log_access');
+
+// Check if IP is blocked
+function bch_check_ip_block() {
+    global $wpdb;
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $ip_address = $_SERVER['REMOTE_ADDR'];
+    // error_log('ERROR LOG ::: '.$ip_address);
+
+    $blocked_ip = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND kind = 'traffic'", $ip_address));
+    if ($blocked_ip) {
+        wp_die('Your IP has been blocked.');
+    }
+}
+add_action('init', 'bch_check_ip_block');
+
+// Include admin view
+include plugin_dir_path(__FILE__) . 'bch_admin_view.php';
+
+// Include admin view
+include plugin_dir_path(__FILE__) . 'bch_admin_access_log_view.php';
+
+// Admin Menu for Blocking IPs
+add_action('admin_menu', 'bch_admin_menu');
+function bch_admin_menu() {
+    add_menu_page('Boom Click Handler', 'Boom Click Handler', 'manage_options', 'boom-click-handler', 'bch_admin_page');
+    add_submenu_page('boom-click-handler', 'Access Log', 'Access Log', 'manage_options', 'bch-access-log', 'bch_access_log_page');
+}
+
+// Enqueue scripts
+add_action('admin_enqueue_scripts', 'bch_enqueue_admin_scripts');
+function bch_enqueue_admin_scripts($hook) {
+    if ($hook != 'toplevel_page_boom-click-handler' && $hook != 'boom-click-handler_page_bch-access-log') {
+        return;
+    }
+    wp_enqueue_script('bch-admin-script', plugin_dir_url(__FILE__) . 'js/bch-admin.js', array('jquery'), '1.0', true);
+    wp_localize_script('bch-admin-script', 'bch_ajax', array('ajax_url' => admin_url('admin-ajax.php')));
+}
+
+// Handle IP Blocking via AJAX
+add_action('wp_ajax_bch_block_ip', 'bch_ajax_block_ip');
+function bch_ajax_block_ip() {
+    global $wpdb;
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $ip_address = sanitize_text_field($_POST['bch_ip_address']);
+    $kind = sanitize_text_field($_POST['bch_kind']);
+    if (filter_var($ip_address, FILTER_VALIDATE_IP)) {
+        $result = $wpdb->insert($blacklist_table, array(
+            'ip_address' => $ip_address,
+            'device_id' => null,
+            'kind' => $kind
+        ));
+        if ($result !== false) {
+            wp_send_json_success('IP ' . esc_html($ip_address) . ' has been blocked as ' . esc_html($kind));
+        } else {
+            wp_send_json_error('Failed to block IP ' . esc_html($ip_address));
+        }
+    } else {
+        wp_send_json_error('Invalid IP address');
+    }
+}
+
+// Handle IP Unblocking via AJAX
+add_action('wp_ajax_bch_unblock_ip', 'bch_ajax_unblock_ip');
+function bch_ajax_unblock_ip() {
+    global $wpdb;
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $ip_id = intval($_POST['ip_id']);
+    $result = $wpdb->delete($blacklist_table, array('id' => $ip_id));
+    if ($result !== false) {
+        wp_send_json_success('IP has been unblocked');
+    } else {
+        wp_send_json_error('Failed to unblock IP');
+    }
+}
+
+// Function to retrieve blocked IPs for AJAX
+function bch_get_blocked_ips() {
+    global $wpdb;
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+    $blocked_ips = $wpdb->get_results("SELECT * FROM $blacklist_table");
+    wp_send_json_success($blocked_ips);
+}
+add_action('wp_ajax_bch_get_blocked_ips', 'bch_get_blocked_ips');
+
+// Function to clear all entries in access log via AJAX
+add_action('wp_ajax_bch_clear_access_log', 'bch_clear_access_log');
+function bch_clear_access_log() {
+    global $wpdb;
+    $access_log_table = $wpdb->prefix . 'bch_access_log';
+    $result = $wpdb->query("TRUNCATE TABLE $access_log_table");
+    if ($result !== false) {
+        wp_send_json_success('Access log cleared.');
+    } else {
+        wp_send_json_error('Failed to clear access log.');
+    }
+}
+
+// Detect and Block Suspicious IPs
+function bch_block_suspicious_ips() {
+    global $wpdb;
+    $access_log_table = $wpdb->prefix . 'bch_access_log';
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+
+    // Daftar user-agent yang mencurigakan
+    $suspicious_agents = ["scrapy", "python", "aiohttp"];
+
+    // Mendapatkan semua entri dengan user-agent yang mencurigakan
+    $suspicious_entries = $wpdb->get_results("
+        SELECT DISTINCT ip_address, user_agent
+        FROM {$access_log_table}
+        WHERE user_agent REGEXP '" . implode("|", $suspicious_agents) . "'
+    ");
+
+    foreach ($suspicious_entries as $entry) {
+        $ip_address = $entry->ip_address;
+        $user_agent = $entry->user_agent;
+
+        // Memeriksa apakah IP sudah ada di blacklist
+        $is_blocked = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $blacklist_table WHERE ip_address = %s AND kind = 'traffic'", $ip_address));
+        if (!$is_blocked) {
+            // Memasukkan IP yang mencurigakan ke dalam tabel blacklist
+            $wpdb->insert($blacklist_table, array(
+                'ip_address' => $ip_address,
+                'device_id' => null,
+                'kind' => 'traffic',
+                'reason' => 'Suspicious User-Agent: ' . $user_agent
+            ));
+        }
+    }
+
+    // Memblokir IP yang mengakses lebih dari 4 konten dalam satu menit
+    // $time_limit = '1 minute';
+    // $access_threshold = 4;
+
+    // $frequent_accesses = $wpdb->get_results("
+    //     SELECT ip_address, COUNT(*) as access_count
+    //     FROM {$access_log_table}
+    //     WHERE access_time > DATE_SUB(NOW(), INTERVAL $time_limit)
+    //     GROUP BY ip_address
+    //     HAVING access_count > $access_threshold
+    // ");
+
+    // foreach ($frequent_accesses as $entry) {
+    //     $ip_address = $entry->ip_address;
+    //     $access_count = $entry->access_count;
+
+    //     // Memeriksa apakah IP sudah ada di blacklist
+    //     $is_blocked = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $blacklist_table WHERE ip_address = %s AND kind = 'traffic'", $ip_address));
+    //     if (!$is_blocked) {
+    //         // Memasukkan IP yang mencurigakan ke dalam tabel blacklist
+    //         $wpdb->insert($blacklist_table, array(
+    //             'ip_address' => $ip_address,
+    //             'device_id' => null,
+    //             'kind' => 'traffic',
+    //             'reason' => 'Frequent access: ' . $access_count . ' accesses in ' . $time_limit
+    //         ));
+    //     }
+    // }
+}
+add_action('init', 'bch_block_suspicious_ips');
+
+// Validate reCAPTCHA
+function validate_recaptcha($response) {
+    $secret_key = 'YOUR_SECRET_KEY';
+    $remote_ip = $_SERVER['REMOTE_ADDR'];
+    $response = wp_remote_get("https://www.google.com/recaptcha/api/siteverify?secret=$secret_key&response=$response&remoteip=$remote_ip");
+    $response_body = wp_remote_retrieve_body($response);
+    $result = json_decode($response_body, true);
+    return $result['success'];
 }
 
 // Handle Clicks
@@ -100,10 +288,15 @@ function bch_handle_click() {
     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
     $ip_address = $_SERVER['REMOTE_ADDR'];
     $device_id = sanitize_text_field($_POST['device_id']);
+    $recaptcha_response = sanitize_text_field($_POST['g-recaptcha-response']);
     $current_time = current_time('mysql');
 
+    if (!validate_recaptcha($recaptcha_response)) {
+        wp_send_json_error('reCAPTCHA validation failed.');
+    }
+
     // Check blacklist
-    $blacklist = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND device_id = %s", $ip_address, $device_id));
+    $blacklist = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND (device_id IS NULL OR device_id = %s) AND kind = 'click'", $ip_address, $device_id));
     if ($blacklist) {
         wp_send_json_error('You are blacklisted.');
     }
@@ -170,7 +363,7 @@ function bch_check_quarantine() {
     $current_time = current_time('mysql');
 
     // Check blacklist
-    $blacklist = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND device_id = %s", $ip_address, $device_id));
+    $blacklist = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND (device_id IS NULL OR device_id = %s) AND kind = 'click'", $ip_address, $device_id));
     if ($blacklist) {
         wp_send_json_error('You are blacklisted.');
     }
@@ -221,7 +414,8 @@ function detect_vpn($ip_address, $device_id) {
     if ($ip_changes > 3 || count($locations) > 2) {
         $wpdb->insert($blacklist_table, array(
             'ip_address' => $ip_address,
-            'device_id' => $device_id
+            'device_id' => $device_id,
+            'kind' => 'traffic'
         ));
         return true;
     }
@@ -231,7 +425,7 @@ function detect_vpn($ip_address, $device_id) {
 // Get User Location using multiple providers
 function get_user_location($ip_address) {
     // Try ipinfo.io
-    $api_token_ipinfo = 'bd550fe55da285';
+    $api_token_ipinfo = 'YOUR_IPINFO_API_TOKEN';
     $response = wp_remote_get("https://ipinfo.io/$ip_address/json?token=$api_token_ipinfo");
     if (!is_wp_error($response)) {
         $body = wp_remote_retrieve_body($response);
