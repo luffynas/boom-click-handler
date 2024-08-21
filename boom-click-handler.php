@@ -117,19 +117,48 @@ function bch_log_access() {
 }
 add_action('wp', 'bch_log_access');
 
+// Function to get the client's real IP address
+function get_client_ip() {
+    // List of possible headers
+    $headers = [
+        'HTTP_X_FORWARDED_FOR',
+        'HTTP_X_REAL_IP',
+        'HTTP_CLIENT_IP',
+        'REMOTE_ADDR'
+    ];
+
+    foreach ($headers as $header) {
+        if (!empty($_SERVER[$header])) {
+            // Handle `X-Forwarded-For` which can contain multiple IPs
+            if ($header === 'HTTP_X_FORWARDED_FOR') {
+                // The first IP is the original client's IP
+                $ips = explode(',', $_SERVER[$header]);
+                return trim($ips[0]);
+            }
+            // Return the header's value
+            return $_SERVER[$header];
+        }
+    }
+
+    // Default to REMOTE_ADDR if no other headers are present
+    return $_SERVER['REMOTE_ADDR'];
+}
+
 // Check if IP is blocked
 function bch_check_ip_block() {
     global $wpdb;
     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
-    $ip_address = $_SERVER['REMOTE_ADDR'];
+    $ip_address = get_client_ip();
     // error_log('ERROR LOG ::: '.$ip_address);
 
     $blocked_ip = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE ip_address = %s AND kind = 'traffic'", $ip_address));
     if ($blocked_ip) {
-        wp_die('Your IP has been blocked.');
+        wp_die('Your IP has been blocked.', 'Forbidden', array(
+            'response' => 403
+        ));
     }
 }
-add_action('init', 'bch_check_ip_block');
+add_action('wp', 'bch_check_ip_block');
 
 // Include admin view
 include plugin_dir_path(__FILE__) . 'bch_admin_view.php';
@@ -291,7 +320,10 @@ function bch_check_whitelist($user_login, $user) {
                     'kind' => 'login',
                     'reason' => 'Too many login attempts'
                 ));
-                wp_die('Your IP has been blocked due to too many login attempts.');
+                // wp_die('Your IP has been blocked due to too many login attempts.');
+                wp_die('Your IP has been blocked due to too many login attempts.', 'Forbidden', array(
+                    'response' => 403
+                ));
             }
         }
     }
