@@ -2,7 +2,7 @@
 /*
 Plugin Name: Boom Click Handler
 Description: Mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih. Termasuk memblokir IP yang dicurigai sebagai bot.
-Version: 1.0
+Version: 1.7.1
 Author: @luffynas
 */
 
@@ -189,25 +189,128 @@ function bch_enqueue_admin_scripts($hook) {
 
 // Handle IP Blocking via AJAX
 add_action('wp_ajax_bch_block_ip', 'bch_ajax_block_ip');
+// function bch_ajax_block_ip() {
+//     global $wpdb;
+//     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+//     $ip_address = sanitize_text_field($_POST['bch_ip_address']);
+//     $kind = sanitize_text_field($_POST['bch_kind']);
+//     if (filter_var($ip_address, FILTER_VALIDATE_IP)) {
+//         $result = $wpdb->insert($blacklist_table, array(
+//             'ip_address' => $ip_address,
+//             'device_id' => null,
+//             'kind' => $kind
+//         ));
+//         if ($result !== false) {
+//             update_htaccess_ip_rules($ip_address, 'block');
+//             wp_send_json_success('IP ' . esc_html($ip_address) . ' has been blocked as ' . esc_html($kind));
+//         } else {
+//             wp_send_json_error('Failed to block IP ' . esc_html($ip_address));
+//         }
+//     } else {
+//         wp_send_json_error('Invalid IP address');
+//     }
+// }
+
 function bch_ajax_block_ip() {
     global $wpdb;
     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
-    $ip_address = sanitize_text_field($_POST['bch_ip_address']);
+    // $ip_input = sanitize_text_field($_POST['bch_ip_address']);
+    $ip_addresses = explode("\n", sanitize_textarea_field($_POST['bch_ip_address']));
+    $ip_addresses = array_map('trim', $ip_addresses);
+    $ip_addresses = array_filter($ip_addresses);
+
     $kind = sanitize_text_field($_POST['bch_kind']);
-    if (filter_var($ip_address, FILTER_VALIDATE_IP)) {
-        $result = $wpdb->insert($blacklist_table, array(
-            'ip_address' => $ip_address,
-            'device_id' => null,
-            'kind' => $kind
+    error_log("POST Data: " . print_r($ip_addresses, true));
+
+    $success = [];
+    $errors = [];
+
+    // Validasi apakah input adalah IP, range, atau CIDR
+    foreach ($ip_addresses as $ip_address) {
+        $existing_ip = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $blacklist_table WHERE ip_address = %s",
+            $ip_address
         ));
-        if ($result !== false) {
-            wp_send_json_success('IP ' . esc_html($ip_address) . ' has been blocked as ' . esc_html($kind));
+
+        if (filter_var($ip_address, FILTER_VALIDATE_IP)) {
+            // Blokir IP tunggal
+            if ($existing_ip == 0) {
+                $result = $wpdb->insert($blacklist_table, array(
+                    'ip_address' => $ip_address,
+                    'device_id' => null,
+                    'kind' => $kind
+                ));
+                if ($result !== false) {
+                    update_htaccess_ip_rules($ip_address, 'block');
+                    $success[] = 'IP ' . esc_html($ip_address) . ' has been blocked as ' . esc_html($kind);
+                } else {
+                    $errors[] = 'Failed to block IP ' . esc_html($ip_address);
+                }
+            }else {
+                $success[] = 'IP Address Duplicated';
+            }
+        } elseif (strpos($ip_address, '-') !== false) {
+            // Blokir rentang IP
+            list($start_ip, $end_ip) = explode('-', $ip_address);
+            if (filter_var(trim($start_ip), FILTER_VALIDATE_IP) && filter_var(trim($end_ip), FILTER_VALIDATE_IP)) {
+                if ($existing_ip == 0) {
+                    $result = $wpdb->insert($blacklist_table, array(
+                        'ip_address' => $ip_address,
+                        'device_id' => null,
+                        'kind' => $kind
+                    ));
+                    if ($result !== false) {
+                        update_htaccess_ip_rules($ip_address, 'block');
+                        $success[] = 'IP range ' . esc_html($ip_address) . ' has been blocked as ' . esc_html($kind);
+                    } else {
+                        $errors[] = 'Failed to block IP range ' . esc_html($ip_address);
+                    }
+                }else {
+                    $success[] = 'IP Range Duplicated';
+                }
+            } else {
+                // $errors[] = 'Invalid IP range: ' . esc_html($ip_address);
+            }
+        } elseif (strpos($ip_address, '/') !== false) {
+            // Blokir CIDR
+            if (validate_cidr($ip_address)) {
+                if ($existing_ip == 0) {
+                    $result = $wpdb->insert($blacklist_table, array(
+                        'ip_address' => $ip_address,
+                        'device_id' => null,
+                        'kind' => $kind
+                    ));
+                    if ($result !== false) {
+                        update_htaccess_ip_rules($ip_address, 'block');
+                        $success[] = 'CIDR ' . esc_html($ip_address) . ' has been blocked as ' . esc_html($kind);
+                    } else {
+                        $errors[] = 'Failed to block CIDR ' . esc_html($ip_address);
+                    }
+                }else {
+                    $success[] = 'CIDR Duplicated';
+                }
+            } else {
+                $errors[] = 'Invalid CIDR: ' . esc_html($ip_address);
+            }
         } else {
-            wp_send_json_error('Failed to block IP ' . esc_html($ip_address));
+            $errors[] = 'Invalid IP address or range: ' . esc_html($ip_address);
         }
-    } else {
-        wp_send_json_error('Invalid IP address');
     }
+
+    if (!empty($success)) {
+        wp_send_json_success('IPs has been blocked as ' . esc_html($kind));
+    } else {
+        wp_send_json_error('Invalid IP address or range: ');
+    }
+}
+
+function validate_cidr($cidr) {
+    $parts = explode('/', $cidr);
+    if (count($parts) === 2 && filter_var($parts[0], FILTER_VALIDATE_IP)) {
+        $prefix = intval($parts[1]);
+        return $prefix >= 0 && $prefix <= 32;
+    }
+    return false;
 }
 
 // Handle IP Unblocking via AJAX
@@ -216,8 +319,10 @@ function bch_ajax_unblock_ip() {
     global $wpdb;
     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
     $ip_id = intval($_POST['ip_id']);
+    $data_to_delete = $wpdb->get_row($wpdb->prepare("SELECT * FROM $blacklist_table WHERE id = %d", $ip_id), ARRAY_A);
     $result = $wpdb->delete($blacklist_table, array('id' => $ip_id));
     if ($result !== false) {
+        update_htaccess_ip_rules($data_to_delete['ip_address'], 'unblock');
         wp_send_json_success('IP has been unblocked');
     } else {
         wp_send_json_error('Failed to unblock IP');
@@ -572,4 +677,266 @@ function get_user_location($ip_address) {
 
     return 'Unknown';
 }
+
+// Plugin untuk memblokir IP tertentu menggunakan .htaccess.
+// function update_htaccess_with_blocked_ips() {
+//     global $wpdb;
+//     // Path ke file .htaccess
+//     $htaccess_file = ABSPATH . '.htaccess';
+
+//     $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+//     // Daftar IP yang ingin diblokir
+//     $blocked_ips = $wpdb->get_col("SELECT ip_address FROM $blacklist_table");
+
+//     // Buat aturan untuk memblokir IP
+//     $block_rules = "\n# Blocked IPs - Dynamic IP Blocker Plugin\n";
+//     $block_rules .= "<Limit GET POST>\n";
+//     $block_rules .= "order allow,deny\n";
+
+//     foreach ($blocked_ips as $ip) {
+//         $block_rules .= "deny from $ip\n";
+//     }
+
+//     $block_rules .= "allow from all\n";
+//     $block_rules .= "</Limit>\n";
+
+//     if (file_exists($htaccess_file)) {
+//         $current_htaccess = file_get_contents($htaccess_file);
+
+//         // Hindari duplikasi aturan
+//         if (strpos($current_htaccess, '# Blocked IPs - Dynamic IP Blocker Plugin') === false) {
+//             // Tambahkan aturan ke file .htaccess
+//             file_put_contents($htaccess_file, $current_htaccess . $block_rules);
+//         }
+//     } else {
+//         // Buat file .htaccess jika belum ada
+//         file_put_contents($htaccess_file, $block_rules);
+//     }
+// }
+
+function update_htaccess_with_blocked_ips() {
+    global $wpdb;
+
+    // Path ke file .htaccess
+    $htaccess_file = ABSPATH . '.htaccess';
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+
+    // Ambil daftar IP, rentang IP, atau CIDR dari database
+    $blocked_ips = $wpdb->get_col("SELECT ip_address FROM $blacklist_table");
+
+    // Buat aturan untuk memblokir IP
+    $block_rules = "\n# Blocked IPs - Dynamic IP Blocker Plugin\n";
+    $block_rules .= "<Limit GET POST>\n";
+    $block_rules .= "order allow,deny\n";
+
+    foreach ($blocked_ips as $ip) {
+        // Sanitasi input sebelum ditulis ke .htaccess
+        $ip = trim($ip);
+
+        // Tambahkan aturan berdasarkan format IP
+        if (strpos($ip, '/') !== false) {
+            // CIDR
+            $block_rules .= "deny from $ip\n";
+        } elseif (strpos($ip, '-') !== false) {
+            // Rentang IP
+            list($start_ip, $end_ip) = explode('-', $ip);
+            $block_rules .= "deny from $start_ip-$end_ip\n";
+        } elseif (filter_var($ip, FILTER_VALIDATE_IP)) {
+            // IP Tunggal
+            $block_rules .= "deny from $ip\n";
+        }
+    }
+
+    $block_rules .= "allow from all\n";
+    $block_rules .= "</Limit>\n";
+
+    // Periksa apakah file .htaccess ada
+    if (file_exists($htaccess_file)) {
+        $current_htaccess = file_get_contents($htaccess_file);
+
+        // Hapus aturan lama sebelum menambahkan aturan baru
+        $updated_htaccess = preg_replace(
+            '/\n# Blocked IPs - Dynamic IP Blocker Plugin.*?<Limit GET POST>.*?<\/Limit>\n/s',
+            '',
+            $current_htaccess
+        );
+
+        // Tambahkan aturan baru ke file .htaccess
+        file_put_contents($htaccess_file, $updated_htaccess . $block_rules);
+    } else {
+        // Jika file .htaccess belum ada, buat file baru dengan aturan dasar
+        $base_rules = "order allow,deny\nallow from all\n";
+        file_put_contents($htaccess_file, $base_rules . $block_rules);
+    }
+}
+
+// Jalankan fungsi saat plugin diaktifkan
+register_activation_hook(__FILE__, 'update_htaccess_with_blocked_ips');
+
+function remove_htaccess_block_rules() {
+    global $wpdb;
+    // Path ke file .htaccess
+    $htaccess_file = ABSPATH . '.htaccess';
+
+    if (file_exists($htaccess_file)) {
+        $current_htaccess = file_get_contents($htaccess_file);
+
+        // Hapus aturan yang ditambahkan oleh plugin
+        $updated_htaccess = preg_replace(
+            '/\n# Blocked IPs - Dynamic IP Blocker Plugin.*?<Limit GET POST>.*?<\/Limit>\n/s',
+            '',
+            $current_htaccess
+        );
+
+        file_put_contents($htaccess_file, $updated_htaccess);
+    }
+}
+
+// Jalankan fungsi saat plugin dinonaktifkan
+register_deactivation_hook(__FILE__, 'remove_htaccess_block_rules');
+
+// Jalankan fungsi saat plugin diaktifkan
+register_activation_hook(__FILE__, 'activate_htaccess_rules');
+function activate_htaccess_rules() {
+    // Tambahkan aturan default saat aktivasi plugin
+    $default_ip = '127.0.0.1'; // IP default yang ingin diblokir
+    update_htaccess_ip_rules($default_ip, 'block');
+}
+
+// function update_htaccess_ip_rules($ip, $type) {
+//     // Path ke file .htaccess
+//     $htaccess_file = ABSPATH . '.htaccess';
+
+//     // Periksa apakah file .htaccess ada
+//     if (file_exists($htaccess_file)) {
+//         // Baca isi file .htaccess saat ini
+//         $current_htaccess = file_get_contents($htaccess_file);
+
+//         // Jika tipe operasi adalah 'unblock'
+//         if ($type === 'unblock') {
+//             // Hapus aturan untuk IP yang ingin dibuka blokirnya
+//             $updated_htaccess = preg_replace(
+//                 "/\bdeny from $ip\b\n/",
+//                 '',
+//                 $current_htaccess
+//             );
+//         } elseif ($type === 'block') {
+//             // Jika tipe operasi adalah 'block'
+//             // Hapus IP terlebih dahulu jika ada untuk menghindari duplikasi
+//             $updated_htaccess = preg_replace(
+//                 "/\bdeny from $ip\b\n/",
+//                 '',
+//                 $current_htaccess
+//             );
+
+//             // Tambahkan aturan baru jika belum ada
+//             if (strpos($updated_htaccess, "deny from $ip") === false) {
+//                 $updated_htaccess .= "\ndeny from $ip\n";
+//             }
+//         } else {
+//             // Jika tipe tidak valid
+//             return false;
+//         }
+
+//         // Tulis kembali ke file .htaccess
+//         file_put_contents($htaccess_file, $updated_htaccess);
+
+//     } else {
+//         // Jika file .htaccess belum ada
+//         if ($type === 'block') {
+//             // Buat file baru dengan aturan dasar hanya untuk 'block'
+//             $rules = "order allow,deny\n";
+//             $rules .= "deny from $ip\n";
+//             $rules .= "allow from all\n";
+
+//             file_put_contents($htaccess_file, $rules);
+//         }
+//     }
+// }
+
+function update_htaccess_ip_rules($ip_input, $type) {
+    $htaccess_file = ABSPATH . '.htaccess';
+
+    if (file_exists($htaccess_file)) {
+        $current_htaccess = file_get_contents($htaccess_file);
+
+        if ($type === 'block') {
+            if (strpos($ip_input, '/') !== false) {
+                // Jika input adalah CIDR
+                if (validate_cidr($ip_input)) {
+                    $rule = "deny from $ip_input\n";
+
+                    if (strpos($current_htaccess, $rule) === false) {
+                        $current_htaccess .= $rule;
+                    }
+                }
+            } elseif (strpos($ip_input, '-') !== false) {
+                // Jika rentang IP
+                list($start_ip, $end_ip) = explode('-', $ip_input);
+                $rule = "deny from $start_ip-$end_ip\n";
+
+                if (strpos($current_htaccess, $rule) === false) {
+                    $current_htaccess .= $rule;
+                }
+            } else {
+                // Jika IP tunggal
+                $rule = "deny from $ip_input\n";
+
+                if (strpos($current_htaccess, $rule) === false) {
+                    $current_htaccess .= $rule;
+                }
+            }
+        } elseif ($type === 'unblock') {
+            // Hapus aturan
+            $current_htaccess = preg_replace("/deny from $ip_input(-.+)?\n/", '', $current_htaccess);
+        }
+
+        file_put_contents($htaccess_file, $current_htaccess);
+    } else {
+        // Jika file .htaccess belum ada
+        $rules = "order allow,deny\n";
+        if (strpos($ip_input, '/') !== false && validate_cidr($ip_input)) {
+            $rules .= "deny from $ip_input\n";
+        } elseif (strpos($ip_input, '-') !== false) {
+            list($start_ip, $end_ip) = explode('-', $ip_input);
+            $rules .= "deny from $start_ip-$end_ip\n";
+        } else {
+            $rules .= "deny from $ip_input\n";
+        }
+        $rules .= "allow from all\n";
+        file_put_contents($htaccess_file, $rules);
+    }
+}
+
+// Export CSV
+add_action('wp_ajax_bch_export_csv', 'bch_export_csv');
+function bch_export_csv() {
+    global $wpdb;
+    $blacklist_table = $wpdb->prefix . 'bch_blacklist';
+
+    // Ambil semua data dari tabel blacklist
+    $results = $wpdb->get_results("SELECT * FROM $blacklist_table", ARRAY_A);
+
+    if (empty($results)) {
+        wp_send_json_error(['message' => 'Tidak ada data untuk diexport']);
+        return;
+    }
+
+    // Buat konten CSV
+    $csv_data = [];
+    $csv_data[] = ['ID', 'IP Address', 'Device ID', 'Kind', 'Reason'];
+    foreach ($results as $row) {
+        $csv_data[] = [$row['id'], $row['ip_address'], $row['device_id'], $row['kind'], $row['reason']];
+    }
+
+    // Konversi array ke format CSV
+    $csv_output = '';
+    foreach ($csv_data as $line) {
+        $csv_output .= implode(',', array_map('sanitize_text_field', $line)) . "\n";
+    }
+
+    // Kirim CSV ke browser
+    wp_send_json_success(['csv' => $csv_output]);
+}
+
 ?>

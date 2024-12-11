@@ -1,12 +1,12 @@
 jQuery(document).ready(function($) {
     $('#bch-block-ip-form').on('submit', function(e) {
         e.preventDefault();
-        var ipAddress = $('input[name="bch_ip_address"]').val();
+        var ipAddresses = $('textarea[name="bch_ip_address"]').val();
         var kind = $('select[name="bch_kind"]').val();
 
         $.post(bch_ajax.ajax_url, {
             action: 'bch_block_ip',
-            bch_ip_address: ipAddress,
+            bch_ip_address: ipAddresses,
             bch_kind: kind
         }, function(response) {
             if (response.success) {
@@ -109,5 +109,31 @@ jQuery(document).ready(function($) {
             console.log('AJAX error:', textStatus, errorThrown);
         });
     });
+
+    //Export CSV
+    $('#export-csv').on('click', function () {
+        // Kirim request ke server untuk export CSV
+        $.post(bch_ajax.ajax_url, {
+            action: 'bch_export_csv'
+        }, function (response) {
+            if (response.success) {
+                // Buat file download untuk CSV
+                const blob = new Blob([response.data.csv], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'blocked_ips.csv';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            } else {
+                alert('Gagal melakukan export: ' + response.data.message);
+            }
+        }).fail(function (xhr) {
+            console.error('AJAX Error:', xhr.responseText);
+            alert('Kesalahan terjadi saat melakukan export.');
+        });
+    });
+
 });
 

@@ -12,7 +12,10 @@ function bch_admin_page() {
             <table class="form-table">
                 <tr valign="top">
                     <th scope="row">IP Address to Block</th>
-                    <td><input type="text" name="bch_ip_address" value="" class="regular-text" required /></td>
+                    <td>
+                    <textarea name="bch_ip_address" rows="10" cols="50" class="regular-text" required></textarea>
+                    <p class="description">Masukkan daftar IP, satu IP per baris.</p>
+                    </td>
                 </tr>
                 <tr valign="top">
                     <th scope="row">Kind</th>
@@ -24,7 +27,10 @@ function bch_admin_page() {
                     </td>
                 </tr>
             </table>
-            <?php submit_button('Block IP'); ?>
+            <p class="submit">
+                <?php submit_button('Block IP', 'primary', '', false); ?>
+                <button type="button" id="export-csv" class="button-secondary">Export CSV</button>
+            </p>
         </form>
         <h2>Blocked IPs</h2>
         <table id="bch-blocked-ips-table" class="widefat fixed" cellspacing="0">
