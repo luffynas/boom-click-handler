@@ -2,7 +2,7 @@
 /*
 Plugin Name: Boom Click Handler
 Description: Mendeteksi dan mencegah klik iklan berlebihan dari pengguna dengan perangkat dan IP yang sama menggunakan metode deteksi canggih. Termasuk memblokir IP yang dicurigai sebagai bot.
-Version: 1.7.1
+Version: 1.7.2
 Author: @luffynas
 */
 
